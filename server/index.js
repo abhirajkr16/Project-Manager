@@ -3,36 +3,37 @@ import { createServer } from "http";
 import cors from "cors";
 import helmet from "helmet";
 import dotenv from "dotenv";
+import cookieParser from "cookie-parser";
 
-// Import routes
 import authRoutes from "./routes/auth.routes.js";
 import projectsRoutes from "./routes/projects.routes.js";
 import tasksRoutes from "./routes/tasks.routes.js";
 import analyticsRoutes from "./routes/analytics.routes.js";
 import activityRoutes from "./routes/activity.routes.js";
-import { initializeWebSocket } from "./websocket/index.js";
-import cookieParser from "cookie-parser";
-import { startOverdueJob } from "./jobs/overdue.job.js";
 import notificationsRoutes from "./routes/notifications.routes.js";
+
+import { initializeWebSocket } from "./websocket/index.js";
+import { startOverdueJob } from "./jobs/overdue.job.js";
 
 dotenv.config();
 
 const app = express();
 const server = createServer(app);
 
-// Initialize WebSocket
-initializeWebSocket(server);
+if (process.env.NODE_ENV !== "test") {
+  initializeWebSocket(server);
+}
 
 // Middleware
 app.use(
   helmet({
-    contentSecurityPolicy: false, // Disable for development
+    contentSecurityPolicy: false,
   }),
 );
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URL || true, // Allow all origins in development
+    origin: process.env.CLIENT_URL || true,
     credentials: true,
   }),
 );
@@ -44,16 +45,21 @@ app.use(cookieParser());
 // Request logging
 app.use((req, res, next) => {
   const start = Date.now();
+
   res.on("finish", () => {
     const duration = Date.now() - start;
     console.log(`${req.method} ${req.path} ${res.statusCode} - ${duration}ms`);
   });
+
   next();
 });
 
 // Health check
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", timestamp: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // API routes
@@ -63,14 +69,18 @@ app.use("/tasks", tasksRoutes);
 app.use("/analytics", analyticsRoutes);
 app.use("/activity", activityRoutes);
 app.use("/notifications", notificationsRoutes);
+
 // 404 handler
 app.use((req, res) => {
-  res.status(404).json({ error: "Route not found" });
+  res.status(404).json({
+    error: "Route not found",
+  });
 });
 
 // Error handler
 app.use((err, req, res, next) => {
   console.error("Unhandled error:", err);
+
   res.status(500).json({
     error: "Internal server error",
     message: process.env.NODE_ENV === "development" ? err.message : undefined,
@@ -79,28 +89,22 @@ app.use((err, req, res, next) => {
 
 const PORT = process.env.PORT || 3001;
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`
-╔════════════════════════════════════════════╗
-║   Developer Dashboard Server              ║
-║                                            ║
-║   🚀 Server running on port ${PORT}         ║
-║   🌐 API: http://0.0.0.0:${PORT}            ║
-║   🔌 WebSocket: ws://0.0.0.0:${PORT}/ws     ║
-║                                            ║
-║   Environment: ${process.env.NODE_ENV || "development"}                  ║
-╚════════════════════════════════════════════╝
-  `);
-  startOverdueJob();
-});
+if (process.env.NODE_ENV !== "test") {
+  server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on port ${PORT}`);
+    startOverdueJob();
+  });
+}
 
 // Graceful shutdown
 process.on("SIGTERM", () => {
   console.log("SIGTERM received, shutting down gracefully...");
+
   server.close(() => {
     console.log("Server closed");
     process.exit(0);
   });
 });
 
+export { app, server };
 export default app;

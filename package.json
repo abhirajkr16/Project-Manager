@@ -9,8 +9,8 @@
     "server": "nodemon server/index.js",
     "client": "cd client && npm run dev --host",
     "build": "cd client && npm run build",
-    "test": "NODE_OPTIONS=--experimental-vm-modules jest",
-    "test:watch": "NODE_OPTIONS=--experimental-vm-modules jest --watch",
+    "test": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js",
+    "test:watch": "node --experimental-vm-modules ./node_modules/jest/bin/jest.js --watch",
     "migrate": "node server/db/migrate.js",
     "seed": "node server/db/seed.js"
   },
