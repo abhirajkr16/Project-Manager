@@ -1,78 +1,126 @@
-import { query, transaction } from '../db/index.js';
-import { logActivity } from '../services/activity.service.js';
+import { query, transaction } from "../db/index.js";
+import { logActivity } from "../services/activity.service.js";
+
+const checkProjectAccess = async (client, projectId, userId, role) => {
+  const result = await client.query(
+    `SELECT id, owner_id
+     FROM projects
+     WHERE id = $1`,
+    [projectId],
+  );
+
+  if (result.rows.length === 0) {
+    throw new Error("Project not found");
+  }
+
+  const project = result.rows[0];
+
+  if (role === "admin") {
+    return project;
+  }
+
+  if (role === "project_manager" && project.owner_id === userId) {
+    return project;
+  }
+
+  throw new Error("Access denied");
+};
 
 export const getProjects = async (req, res) => {
-  const { owned, limit = 50, offset = 0 } = req.query;
   const userId = req.user.id;
-  const isAdmin = req.user.role === 'admin';
+  const role = req.user.role;
+  const { limit = 50, offset = 0 } = req.query;
 
   try {
-    let queryText;
-    let params;
+    let queryText = `
+      SELECT
+        p.*,
+        u.name AS owner_name,
+        u.email AS owner_email,
+        c.name AS client_name,
+        c.email AS client_email,
+        (
+          SELECT COUNT(*)
+          FROM tasks
+          WHERE project_id = p.id
+        ) AS task_count
+      FROM projects p
+      JOIN users u ON p.owner_id = u.id
+      LEFT JOIN clients c ON p.client_id = c.id
+    `;
 
-    if (isAdmin && owned !== 'true') {
-      // Admin can see all projects
-      queryText = `
-        SELECT p.*, u.name as owner_name, u.email as owner_email,
-               (SELECT COUNT(*) FROM tasks WHERE project_id = p.id) as task_count
-        FROM projects p
-        JOIN users u ON p.owner_id = u.id
+    const params = [limit, offset];
+
+    if (role === "admin") {
+      queryText += `
         ORDER BY p.updated_at DESC
         LIMIT $1 OFFSET $2
       `;
-      params = [limit, offset];
     } else {
-      // Regular users see only their projects
-      queryText = `
-        SELECT p.*, u.name as owner_name, u.email as owner_email,
-               (SELECT COUNT(*) FROM tasks WHERE project_id = p.id) as task_count
-        FROM projects p
-        JOIN users u ON p.owner_id = u.id
-        WHERE p.owner_id = $1
+      queryText += `
+        WHERE p.owner_id = $3
         ORDER BY p.updated_at DESC
-        LIMIT $2 OFFSET $3
+        LIMIT $1 OFFSET $2
       `;
-      params = [userId, limit, offset];
+
+      params.push(userId);
     }
 
     const result = await query(queryText, params);
 
-    res.json({ projects: result.rows });
+    res.json({
+      projects: result.rows,
+    });
   } catch (error) {
-    console.error('Get projects error:', error);
-    res.status(500).json({ error: 'Failed to fetch projects' });
+    console.error("Get projects error:", error);
+
+    res.status(500).json({
+      error: "Failed to fetch projects",
+    });
   }
 };
 
 export const getProject = async (req, res) => {
   const { id } = req.params;
-  const userId = req.user.id;
-  const isAdmin = req.user.role === 'admin';
 
   try {
     const result = await query(
-      `SELECT p.*, u.name as owner_name, u.email as owner_email
+      `SELECT
+         p.*,
+         u.name AS owner_name,
+         u.email AS owner_email,
+         c.name AS client_name,
+         c.email AS client_email
        FROM projects p
        JOIN users u ON p.owner_id = u.id
+       LEFT JOIN clients c ON p.client_id = c.id
        WHERE p.id = $1`,
-      [id]
+      [id],
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Project not found' });
+      return res.status(404).json({
+        error: "Project not found",
+      });
     }
 
     const project = result.rows[0];
 
-    // Check permissions
-    if (!isAdmin && project.owner_id !== userId) {
-      return res.status(403).json({ error: 'Access denied' });
+    if (req.user.role !== "admin" && project.owner_id !== req.user.id) {
+      return res.status(403).json({
+        error: "Access denied",
+      });
     }
 
-    res.json({ project });
+    res.json({
+      project,
+    });
   } catch (error) {
-    console.error('Get project error:', error);
-    res.status(500).json({ error: 'Failed to fetch project' });
+    console.error("Get project error:", error);
+
+    res.status(500).json({
+      error: "Failed to fetch project",
+    });
   }
 };
 
@@ -81,32 +129,37 @@ export const createProject = async (req, res) => {
   const userId = req.user.id;
 
   try {
-    const result = await transaction(async (client) => {
-      // Create project
-      const projectResult = await client.query(
-        `INSERT INTO projects (owner_id, title, description) 
-         VALUES ($1, $2, $3) 
+    const project = await transaction(async (client) => {
+      const result = await client.query(
+        `INSERT INTO projects (owner_id, title, description)
+         VALUES ($1, $2, $3)
          RETURNING *`,
-        [userId, title, description]
+        [userId, title, description],
       );
 
-      const project = projectResult.rows[0];
+      const newProject = result.rows[0];
 
-      // Log activity
       await logActivity(client, {
         userId,
-        projectId: project.id,
-        action: 'create_project',
-        metadata: { title }
+        projectId: newProject.id,
+        action: "create_project",
+        metadata: {
+          title,
+        },
       });
 
-      return project;
+      return newProject;
     });
 
-    res.status(201).json({ project: result });
+    res.status(201).json({
+      project,
+    });
   } catch (error) {
-    console.error('Create project error:', error);
-    res.status(500).json({ error: 'Failed to create project' });
+    console.error("Create project error:", error);
+
+    res.status(500).json({
+      error: "Failed to create project",
+    });
   }
 };
 
@@ -114,119 +167,112 @@ export const updateProject = async (req, res) => {
   const { id } = req.params;
   const { title, description } = req.body;
   const userId = req.user.id;
-  const isAdmin = req.user.role === 'admin';
+  const role = req.user.role;
 
   try {
-    const result = await transaction(async (client) => {
-      // Check ownership
-      const checkResult = await client.query(
-        'SELECT owner_id FROM projects WHERE id = $1',
-        [id]
-      );
+    const project = await transaction(async (client) => {
+      await checkProjectAccess(client, id, userId, role);
 
-      if (checkResult.rows.length === 0) {
-        throw new Error('Project not found');
-      }
-
-      const project = checkResult.rows[0];
-
-      if (!isAdmin && project.owner_id !== userId) {
-        throw new Error('Access denied');
-      }
-
-      // Build update query dynamically
-      const updates = [];
+      const fields = [];
       const values = [];
       let paramCount = 1;
 
       if (title !== undefined) {
-        updates.push(`title = $${paramCount++}`);
+        fields.push(`title = $${paramCount++}`);
         values.push(title);
       }
 
       if (description !== undefined) {
-        updates.push(`description = $${paramCount++}`);
+        fields.push(`description = $${paramCount++}`);
         values.push(description);
       }
 
-      updates.push(`updated_at = now()`);
+      fields.push("updated_at = now()");
+
       values.push(id);
 
-      const updateResult = await client.query(
-        `UPDATE projects SET ${updates.join(', ')} 
-         WHERE id = $${paramCount} 
+      const result = await client.query(
+        `UPDATE projects
+         SET ${fields.join(", ")}
+         WHERE id = $${paramCount}
          RETURNING *`,
-        values
+        values,
       );
 
-      // Log activity
       await logActivity(client, {
         userId,
         projectId: id,
-        action: 'update_project',
-        metadata: { title, description }
+        action: "update_project",
+        metadata: {
+          title,
+          description,
+        },
       });
 
-      return updateResult.rows[0];
+      return result.rows[0];
     });
 
-    res.json({ project: result });
+    res.json({
+      project,
+    });
   } catch (error) {
-    console.error('Update project error:', error);
-    if (error.message === 'Project not found') {
-      return res.status(404).json({ error: 'Project not found' });
+    console.error("Update project error:", error);
+
+    if (error.message === "Project not found") {
+      return res.status(404).json({
+        error: "Project not found",
+      });
     }
-    if (error.message === 'Access denied') {
-      return res.status(403).json({ error: 'Access denied' });
+
+    if (error.message === "Access denied") {
+      return res.status(403).json({
+        error: "Access denied",
+      });
     }
-    res.status(500).json({ error: 'Failed to update project' });
+
+    res.status(500).json({
+      error: "Failed to update project",
+    });
   }
 };
 
 export const deleteProject = async (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
-  const isAdmin = req.user.role === 'admin';
+  const role = req.user.role;
 
   try {
     await transaction(async (client) => {
-      // Check ownership
-      const checkResult = await client.query(
-        'SELECT owner_id FROM projects WHERE id = $1',
-        [id]
-      );
+      await checkProjectAccess(client, id, userId, role);
 
-      if (checkResult.rows.length === 0) {
-        throw new Error('Project not found');
-      }
-
-      const project = checkResult.rows[0];
-
-      if (!isAdmin && project.owner_id !== userId) {
-        throw new Error('Access denied');
-      }
-
-      // Log activity before deletion
       await logActivity(client, {
         userId,
         projectId: id,
-        action: 'delete_project',
-        metadata: {}
+        action: "delete_project",
+        metadata: {},
       });
 
-      // Delete project (cascades to tasks and activity_logs)
-      await client.query('DELETE FROM projects WHERE id = $1', [id]);
+      await client.query("DELETE FROM projects WHERE id = $1", [id]);
     });
 
     res.status(204).send();
   } catch (error) {
-    console.error('Delete project error:', error);
-    if (error.message === 'Project not found') {
-      return res.status(404).json({ error: 'Project not found' });
+    console.error("Delete project error:", error);
+
+    if (error.message === "Project not found") {
+      return res.status(404).json({
+        error: "Project not found",
+      });
     }
-    if (error.message === 'Access denied') {
-      return res.status(403).json({ error: 'Access denied' });
+
+    if (error.message === "Access denied") {
+      return res.status(403).json({
+        error: "Access denied",
+      });
     }
-    res.status(500).json({ error: 'Failed to delete project' });
+
+    res.status(500).json({
+      error: "Failed to delete project",
+    });
   }
 };

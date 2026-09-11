@@ -1,24 +1,40 @@
-import express from 'express';
+import express from "express";
 import {
   getTasks,
+  getMyTasks,
   createTask,
   updateTask,
-  deleteTask
-} from '../controllers/tasks.controller.js';
-import { verifyToken } from '../middleware/auth.js';
-import { validate, schemas } from '../middleware/validation.js';
+  deleteTask,
+} from "../controllers/tasks.controller.js";
+import { verifyToken, requireRole } from "../middleware/auth.js";
+import { validate, schemas } from "../middleware/validation.js";
 
 const router = express.Router();
 
-// All routes require authentication
 router.use(verifyToken);
 
-// Project tasks
-router.get('/projects/:id/tasks', getTasks);
-router.post('/projects/:id/tasks', validate(schemas.createTask), createTask);
+router.get("/my", requireRole("developer"), getMyTasks);
 
-// Individual tasks
-router.put('/:id', validate(schemas.updateTask), updateTask);
-router.delete('/:id', deleteTask);
+router.get(
+  "/projects/:id/tasks",
+  requireRole("admin", "project_manager"),
+  getTasks,
+);
+
+router.post(
+  "/projects/:id/tasks",
+  requireRole("admin", "project_manager"),
+  validate(schemas.createTask),
+  createTask,
+);
+
+router.put(
+  "/:id",
+  requireRole("admin", "project_manager", "developer"),
+  validate(schemas.updateTask),
+  updateTask,
+);
+
+router.delete("/:id", requireRole("admin", "project_manager"), deleteTask);
 
 export default router;
