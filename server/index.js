@@ -5,6 +5,7 @@ import helmet from "helmet";
 import dotenv from "dotenv";
 import { initializeWebSocket } from "./websocket/index.js";
 import cookieParser from "cookie-parser";
+import { startOverdueJob } from "./jobs/overdue.job.js";
 
 // Import routes
 import authRoutes from "./routes/auth.routes.js";
@@ -87,6 +88,7 @@ server.listen(PORT, "0.0.0.0", () => {
 ║   Environment: ${process.env.NODE_ENV || "development"}                  ║
 ╚════════════════════════════════════════════╝
   `);
+  startOverdueJob();
 });
 
 // Graceful shutdown

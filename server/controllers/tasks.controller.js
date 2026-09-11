@@ -1,78 +1,59 @@
-import { query, transaction } from "../db/index.js";
-import { logActivity } from "../services/activity.service.js";
-import { emitToProject } from "../websocket/index.js";
+import { query } from "../db/index.js";
+import { recordStatusChange } from "../services/task-status.service.js";
 
-const getProject = async (client, projectId) => {
-  const result = await client.query(
-    `SELECT id, owner_id
-     FROM projects
-     WHERE id = $1`,
-    [projectId],
+async function checkProjectAccess(req, projectId) {
+  if (req.user.role === "admin") {
+    return true;
+  }
+
+  if (req.user.role !== "project_manager") {
+    return false;
+  }
+
+  const result = await query(
+    `
+    SELECT id
+    FROM projects
+    WHERE id = $1
+      AND owner_id = $2
+    `,
+    [projectId, req.user.id],
   );
 
-  if (result.rows.length === 0) {
-    throw new Error("Project not found");
-  }
+  return result.rows.length > 0;
+}
 
-  return result.rows[0];
-};
-
-const checkProjectAccess = async (client, projectId, userId, role) => {
-  const project = await getProject(client, projectId);
-
-  if (role === "admin") {
-    return project;
-  }
-
-  if (role === "project_manager" && project.owner_id === userId) {
-    return project;
-  }
-
-  throw new Error("Access denied");
-};
-
-export const getTasks = async (req, res) => {
-  const { id: projectId } = req.params;
-  const { status, search, limit = 100, offset = 0 } = req.query;
-
+export async function getTasks(req, res) {
   try {
-    await checkProjectAccess({ query }, projectId, req.user.id, req.user.role);
+    const { projectId } = req.params;
 
-    let queryText = `
+    const hasAccess = await checkProjectAccess(req, projectId);
+
+    if (!hasAccess) {
+      return res.status(403).json({
+        error: "You do not have access to this project",
+      });
+    }
+
+    const result = await query(
+      `
       SELECT
-        t.*,
-        creator.name AS created_by_name,
-        developer.name AS assigned_to_name,
-        developer.email AS assigned_to_email
+        t.id,
+        t.project_id,
+        t.title,
+        t.description,
+        t.status,
+        t.priority,
+        t.assigned_to,
+        t.due_date,
+        t.overdue,
+        t.created_at,
+        t.updated_at,
+        u.name AS assigned_developer
       FROM tasks t
-      LEFT JOIN users creator
-        ON t.created_by = creator.id
-      LEFT JOIN users developer
-        ON t.assigned_to = developer.id
+      LEFT JOIN users u
+        ON u.id = t.assigned_to
       WHERE t.project_id = $1
-    `;
-
-    const params = [projectId];
-    let paramCount = 2;
-
-    if (status) {
-      queryText += ` AND t.status = $${paramCount++}`;
-      params.push(status);
-    }
-
-    if (search) {
-      queryText += `
-        AND (
-          t.title ILIKE $${paramCount}
-          OR t.description ILIKE $${paramCount + 1}
-        )
-      `;
-
-      params.push(`%${search}%`, `%${search}%`);
-      paramCount += 2;
-    }
-
-    queryText += `
       ORDER BY
         CASE t.priority
           WHEN 'critical' THEN 1
@@ -80,70 +61,42 @@ export const getTasks = async (req, res) => {
           WHEN 'medium' THEN 3
           WHEN 'low' THEN 4
         END,
-        t.due_date ASC NULLS LAST
-      LIMIT $${paramCount++}
-      OFFSET $${paramCount++}
-    `;
+        t.due_date NULLS LAST,
+        t.created_at DESC
+      `,
+      [projectId],
+    );
 
-    params.push(limit, offset);
-
-    const result = await query(queryText, params);
-
-    res.json({
-      tasks: result.rows,
-    });
+    res.json(result.rows);
   } catch (error) {
     console.error("Get tasks error:", error);
-
-    if (error.message === "Project not found") {
-      return res.status(404).json({
-        error: "Project not found",
-      });
-    }
-
-    if (error.message === "Access denied") {
-      return res.status(403).json({
-        error: "Access denied",
-      });
-    }
-
     res.status(500).json({
       error: "Failed to fetch tasks",
     });
   }
-};
+}
 
-export const getMyTasks = async (req, res) => {
-  const { status, priority, limit = 100, offset = 0 } = req.query;
-
+export async function getMyTasks(req, res) {
   try {
-    let queryText = `
+    const result = await query(
+      `
       SELECT
-        t.*,
-        p.title AS project_title,
-        developer.name AS assigned_to_name
+        t.id,
+        t.project_id,
+        t.title,
+        t.description,
+        t.status,
+        t.priority,
+        t.assigned_to,
+        t.due_date,
+        t.overdue,
+        t.created_at,
+        t.updated_at,
+        p.title AS project_title
       FROM tasks t
       JOIN projects p
-        ON t.project_id = p.id
-      LEFT JOIN users developer
-        ON t.assigned_to = developer.id
+        ON p.id = t.project_id
       WHERE t.assigned_to = $1
-    `;
-
-    const params = [req.user.id];
-    let paramCount = 2;
-
-    if (status) {
-      queryText += ` AND t.status = $${paramCount++}`;
-      params.push(status);
-    }
-
-    if (priority) {
-      queryText += ` AND t.priority = $${paramCount++}`;
-      params.push(priority);
-    }
-
-    queryText += `
       ORDER BY
         CASE t.priority
           WHEN 'critical' THEN 1
@@ -151,333 +104,282 @@ export const getMyTasks = async (req, res) => {
           WHEN 'medium' THEN 3
           WHEN 'low' THEN 4
         END,
-        t.due_date ASC NULLS LAST
-      LIMIT $${paramCount++}
-      OFFSET $${paramCount++}
-    `;
+        t.due_date NULLS LAST
+      `,
+      [req.user.id],
+    );
 
-    params.push(limit, offset);
-
-    const result = await query(queryText, params);
-
-    res.json({
-      tasks: result.rows,
-    });
+    res.json(result.rows);
   } catch (error) {
     console.error("Get my tasks error:", error);
-
     res.status(500).json({
-      error: "Failed to fetch assigned tasks",
+      error: "Failed to fetch tasks",
     });
   }
-};
+}
 
-export const createTask = async (req, res) => {
-  const { id: projectId } = req.params;
-  const { title, description, priority = "medium" } = req.body;
-
+export async function createTask(req, res) {
   try {
-    const task = await transaction(async (client) => {
-      await checkProjectAccess(client, projectId, req.user.id, req.user.role);
+    const { projectId } = req.params;
+    const { title, description, assignedTo, status, priority, dueDate } =
+      req.body;
 
-      const result = await client.query(
-        `INSERT INTO tasks (
-          project_id,
-          title,
-          description,
-          priority,
-          created_by
-        )
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING *`,
-        [projectId, title, description, priority, req.user.id],
+    const hasAccess = await checkProjectAccess(req, projectId);
+
+    if (!hasAccess) {
+      return res.status(403).json({
+        error: "You do not have access to this project",
+      });
+    }
+
+    if (assignedTo) {
+      const developer = await query(
+        `
+        SELECT id
+        FROM users
+        WHERE id = $1
+          AND role = 'developer'
+        `,
+        [assignedTo],
       );
 
-      const newTask = result.rows[0];
+      if (developer.rows.length === 0) {
+        return res.status(400).json({
+          error: "Assigned user must be a developer",
+        });
+      }
+    }
 
-      await logActivity(client, {
-        userId: req.user.id,
+    const result = await query(
+      `
+      INSERT INTO tasks (
+        project_id,
+        title,
+        description,
+        assigned_to,
+        status,
+        priority,
+        due_date,
+        overdue
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, false)
+      RETURNING
+        id,
+        project_id,
+        title,
+        description,
+        assigned_to,
+        status,
+        priority,
+        due_date,
+        overdue,
+        created_at,
+        updated_at
+      `,
+      [
         projectId,
-        action: "create_task",
-        metadata: {
-          taskId: newTask.id,
-          title,
-        },
-      });
+        title,
+        description || null,
+        assignedTo || null,
+        status || "todo",
+        priority || "medium",
+        dueDate || null,
+      ],
+    );
 
-      return newTask;
+    const task = result.rows[0];
+
+    await recordStatusChange({
+      taskId: task.id,
+      changedBy: req.user.id,
+      oldStatus: null,
+      newStatus: task.status,
     });
 
-    emitToProject(projectId, "task_created", {
-      task,
-    });
-
-    res.status(201).json({
-      task,
-    });
+    res.status(201).json(task);
   } catch (error) {
     console.error("Create task error:", error);
-
-    if (error.message === "Project not found") {
-      return res.status(404).json({
-        error: "Project not found",
-      });
-    }
-
-    if (error.message === "Access denied") {
-      return res.status(403).json({
-        error: "Access denied",
-      });
-    }
-
     res.status(500).json({
       error: "Failed to create task",
     });
   }
-};
+}
 
-export const updateTask = async (req, res) => {
-  const { id: taskId } = req.params;
-  const updates = req.body;
-
+export async function updateTask(req, res) {
   try {
-    const result = await transaction(async (client) => {
-      const taskResult = await client.query(
-        `SELECT *
-         FROM tasks
-         WHERE id = $1
-         FOR UPDATE`,
-        [taskId],
-      );
+    const { id } = req.params;
 
-      if (taskResult.rows.length === 0) {
-        throw new Error("Task not found");
-      }
+    const taskResult = await query(
+      `
+      SELECT
+        t.*,
+        p.owner_id
+      FROM tasks t
+      JOIN projects p
+        ON p.id = t.project_id
+      WHERE t.id = $1
+      `,
+      [id],
+    );
 
-      const currentTask = taskResult.rows[0];
-
-      if (req.user.role === "developer") {
-        if (currentTask.assigned_to !== req.user.id) {
-          throw new Error("Access denied");
-        }
-
-        const allowedFields = ["status"];
-
-        for (const key of Object.keys(updates)) {
-          if (!allowedFields.includes(key)) {
-            throw new Error("Developers can only update task status");
-          }
-        }
-      } else {
-        await checkProjectAccess(
-          client,
-          currentTask.project_id,
-          req.user.id,
-          req.user.role,
-        );
-      }
-
-      const fields = [];
-      const values = [];
-      const diff = {};
-      let paramCount = 1;
-
-      for (const [key, value] of Object.entries(updates)) {
-        if (
-          ["title", "description", "status", "priority"].includes(key) &&
-          currentTask[key] !== value
-        ) {
-          fields.push(`${key} = $${paramCount++}`);
-          values.push(value);
-
-          diff[key] = {
-            old: currentTask[key],
-            new: value,
-          };
-        }
-      }
-
-      if (updates.status === "in-progress" && !currentTask.started_at) {
-        fields.push("started_at = now()");
-
-        diff.started_at = {
-          old: null,
-          new: "now",
-        };
-      }
-
-      if (updates.status === "done" && !currentTask.completed_at) {
-        fields.push("completed_at = now()");
-
-        diff.completed_at = {
-          old: null,
-          new: "now",
-        };
-      }
-
-      if (
-        currentTask.status === "done" &&
-        updates.status &&
-        updates.status !== "done"
-      ) {
-        fields.push("completed_at = NULL");
-
-        diff.completed_at = {
-          old: currentTask.completed_at,
-          new: null,
-        };
-      }
-
-      if (fields.length === 0) {
-        return {
-          task: currentTask,
-          diff: {},
-        };
-      }
-
-      fields.push("updated_at = now()");
-
-      values.push(taskId);
-
-      const updateResult = await client.query(
-        `UPDATE tasks
-         SET ${fields.join(", ")}
-         WHERE id = $${paramCount}
-         RETURNING *`,
-        values,
-      );
-
-      const updatedTask = updateResult.rows[0];
-
-      if (updates.status && updates.status !== currentTask.status) {
-        await client.query(
-          `INSERT INTO task_status_history (
-            task_id,
-            changed_by,
-            old_status,
-            new_status
-          )
-          VALUES ($1, $2, $3, $4)`,
-          [taskId, req.user.id, currentTask.status, updates.status],
-        );
-      }
-
-      await logActivity(client, {
-        userId: req.user.id,
-        projectId: currentTask.project_id,
-        action: "update_task",
-        metadata: {
-          taskId,
-          diff,
-        },
-      });
-
-      return {
-        task: updatedTask,
-        diff,
-      };
-    });
-
-    emitToProject(result.task.project_id, "task_updated", {
-      task: result.task,
-      diff: result.diff,
-    });
-
-    res.json({
-      task: result.task,
-    });
-  } catch (error) {
-    console.error("Update task error:", error);
-
-    if (error.message === "Task not found") {
+    if (taskResult.rows.length === 0) {
       return res.status(404).json({
         error: "Task not found",
       });
     }
 
-    if (
-      error.message === "Project not found" ||
-      error.message === "Access denied"
-    ) {
+    const task = taskResult.rows[0];
+
+    if (req.user.role === "developer") {
+      if (task.assigned_to !== req.user.id) {
+        return res.status(403).json({
+          error: "You can only update tasks assigned to you",
+        });
+      }
+
+      const fields = Object.keys(req.body);
+
+      if (fields.length !== 1 || fields[0] !== "status") {
+        return res.status(403).json({
+          error: "Developers can only update task status",
+        });
+      }
+    } else if (req.user.role === "project_manager") {
+      if (task.owner_id !== req.user.id) {
+        return res.status(403).json({
+          error: "You do not have access to this task",
+        });
+      }
+    } else if (req.user.role !== "admin") {
       return res.status(403).json({
         error: "Access denied",
       });
     }
 
-    if (error.message === "Developers can only update task status") {
-      return res.status(403).json({
-        error: error.message,
+    const { title, description, assignedTo, status, priority, dueDate } =
+      req.body;
+
+    if (assignedTo) {
+      const developer = await query(
+        `
+        SELECT id
+        FROM users
+        WHERE id = $1
+          AND role = 'developer'
+        `,
+        [assignedTo],
+      );
+
+      if (developer.rows.length === 0) {
+        return res.status(400).json({
+          error: "Assigned user must be a developer",
+        });
+      }
+    }
+
+    const newStatus = status ?? task.status;
+    const newAssignedTo =
+      assignedTo === undefined ? task.assigned_to : assignedTo;
+
+    const result = await query(
+      `
+      UPDATE tasks
+      SET
+        title = COALESCE($1, title),
+        description = COALESCE($2, description),
+        assigned_to = $3,
+        status = $4,
+        priority = COALESCE($5, priority),
+        due_date = $6,
+        updated_at = now()
+      WHERE id = $7
+      RETURNING
+        id,
+        project_id,
+        title,
+        description,
+        assigned_to,
+        status,
+        priority,
+        due_date,
+        overdue,
+        created_at,
+        updated_at
+      `,
+      [
+        title ?? null,
+        description ?? null,
+        newAssignedTo,
+        newStatus,
+        priority ?? null,
+        dueDate === undefined ? task.due_date : dueDate,
+        id,
+      ],
+    );
+
+    const updatedTask = result.rows[0];
+
+    if (task.status !== updatedTask.status) {
+      await recordStatusChange({
+        taskId: id,
+        changedBy: req.user.id,
+        oldStatus: task.status,
+        newStatus: updatedTask.status,
       });
     }
 
+    res.json(updatedTask);
+  } catch (error) {
+    console.error("Update task error:", error);
     res.status(500).json({
       error: "Failed to update task",
     });
   }
-};
+}
 
-export const deleteTask = async (req, res) => {
-  const { id: taskId } = req.params;
-
+export async function deleteTask(req, res) {
   try {
-    const projectId = await transaction(async (client) => {
-      const taskResult = await client.query(
-        `SELECT project_id
-         FROM tasks
-         WHERE id = $1`,
-        [taskId],
-      );
+    const { id } = req.params;
 
-      if (taskResult.rows.length === 0) {
-        throw new Error("Task not found");
-      }
+    const taskResult = await query(
+      `
+      SELECT
+        t.id,
+        p.owner_id
+      FROM tasks t
+      JOIN projects p
+        ON p.id = t.project_id
+      WHERE t.id = $1
+      `,
+      [id],
+    );
 
-      const projectId = taskResult.rows[0].project_id;
-
-      await checkProjectAccess(client, projectId, req.user.id, req.user.role);
-
-      await logActivity(client, {
-        userId: req.user.id,
-        projectId,
-        action: "delete_task",
-        metadata: {
-          taskId,
-        },
-      });
-
-      await client.query("DELETE FROM tasks WHERE id = $1", [taskId]);
-
-      return projectId;
-    });
-
-    emitToProject(projectId, "task_deleted", {
-      taskId,
-    });
-
-    res.status(204).send();
-  } catch (error) {
-    console.error("Delete task error:", error);
-
-    if (error.message === "Task not found") {
+    if (taskResult.rows.length === 0) {
       return res.status(404).json({
         error: "Task not found",
       });
     }
 
-    if (error.message === "Project not found") {
-      return res.status(404).json({
-        error: "Project not found",
-      });
-    }
+    const task = taskResult.rows[0];
 
-    if (error.message === "Access denied") {
+    if (
+      req.user.role !== "admin" &&
+      (req.user.role !== "project_manager" || task.owner_id !== req.user.id)
+    ) {
       return res.status(403).json({
-        error: "Access denied",
+        error: "You do not have permission to delete this task",
       });
     }
 
+    await query(`DELETE FROM tasks WHERE id = $1`, [id]);
+
+    res.json({
+      message: "Task deleted successfully",
+    });
+  } catch (error) {
+    console.error("Delete task error:", error);
     res.status(500).json({
       error: "Failed to delete task",
     });
   }
-};
+}
