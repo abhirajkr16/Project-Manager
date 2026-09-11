@@ -88,12 +88,11 @@ async function seed() {
 
       for (const project of projectData) {
         const result = await client.query(
-          `INSERT INTO projects (owner_id, client_id, title, description)
+          `INSERT INTO projects (owner_id, client_id, name, description)
            VALUES ($1, $2, $3, $4)
            RETURNING id`,
           [project.owner, project.client, project.title, project.description],
         );
-
         projectIds.push(result.rows[0].id);
       }
 

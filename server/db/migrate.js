@@ -46,6 +46,18 @@ const migrations = [
   `,
 
   `
+  CREATE TABLE IF NOT EXISTS projects (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    description TEXT,
+    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    client_id UUID,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+  );
+  `,
+
+  `
   ALTER TABLE projects
   ADD COLUMN IF NOT EXISTS client_id UUID;
   `,
@@ -79,7 +91,25 @@ const migrations = [
   `,
 
   `
+  CREATE TABLE IF NOT EXISTS tasks (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+    assigned_to UUID REFERENCES users(id) ON DELETE SET NULL,
+    status TEXT NOT NULL DEFAULT 'todo',
+    priority TEXT NOT NULL DEFAULT 'medium',
+    due_date TIMESTAMP WITH TIME ZONE,
+    overdue BOOLEAN NOT NULL DEFAULT false,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+  );
+  `,
+
+  `
   ALTER TABLE tasks
+  ADD COLUMN IF NOT EXISTS created_by UUID,
   ADD COLUMN IF NOT EXISTS assigned_to UUID,
   ADD COLUMN IF NOT EXISTS due_date TIMESTAMP WITH TIME ZONE,
   ADD COLUMN IF NOT EXISTS overdue BOOLEAN NOT NULL DEFAULT false;
@@ -183,6 +213,20 @@ const migrations = [
   `
   CREATE INDEX IF NOT EXISTS idx_notifications_user_created
   ON notifications(user_id, created_at DESC);
+  `,
+
+  `
+  CREATE TABLE IF NOT EXISTS activity_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
+    task_id UUID REFERENCES tasks(id) ON DELETE CASCADE,
+    action TEXT NOT NULL,
+    entity_type TEXT,
+    entity_id UUID,
+    metadata JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+  );
   `,
 
   `

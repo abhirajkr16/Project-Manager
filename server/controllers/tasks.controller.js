@@ -11,25 +11,30 @@ import {
 } from "../services/realtime.service.js";
 
 async function checkProjectAccess(req, projectId) {
-  if (req.user.role === "admin") {
-    return true;
-  }
-
-  if (req.user.role !== "project_manager") {
-    return false;
-  }
-
-  const result = await query(
+  const projectResult = await query(
     `
-    SELECT id
+    SELECT id, owner_id
     FROM projects
     WHERE id = $1
-      AND owner_id = $2
     `,
-    [projectId, req.user.id],
+    [projectId],
   );
 
-  return result.rows.length > 0;
+  if (projectResult.rows.length === 0) {
+    return { exists: false, hasAccess: false };
+  }
+
+  const project = projectResult.rows[0];
+
+  if (req.user.role === "admin") {
+    return { exists: true, hasAccess: true };
+  }
+
+  if (req.user.role === "project_manager" && project.owner_id === req.user.id) {
+    return { exists: true, hasAccess: true };
+  }
+
+  return { exists: true, hasAccess: false };
 }
 
 export async function getTasks(req, res) {
@@ -39,9 +44,15 @@ export async function getTasks(req, res) {
     const { status, priority, dueFrom, dueTo, search, limit, offset } =
       req.query;
 
-    const hasAccess = await checkProjectAccess(req, projectId);
+    const access = await checkProjectAccess(req, projectId);
 
-    if (!hasAccess) {
+    if (!access.exists) {
+      return res.status(404).json({
+        error: "Project not found",
+      });
+    }
+
+    if (!access.hasAccess) {
       return res.status(403).json({
         error: "You do not have access to this project",
       });
@@ -88,11 +99,9 @@ export async function getTasks(req, res) {
     const offsetValue = offset || 0;
 
     values.push(limitValue);
-
     const limitParameter = values.length;
 
     values.push(offsetValue);
-
     const offsetParameter = values.length;
 
     const result = await query(
@@ -129,7 +138,9 @@ export async function getTasks(req, res) {
       values,
     );
 
-    res.json(result.rows);
+    res.json({
+      tasks: result.rows,
+    });
   } catch (error) {
     console.error("Get tasks error:", error);
 
@@ -155,7 +166,7 @@ export async function getMyTasks(req, res) {
         t.overdue,
         t.created_at,
         t.updated_at,
-        p.title AS project_title
+        p.name AS project_title
       FROM tasks t
       JOIN projects p
         ON p.id = t.project_id
@@ -189,9 +200,15 @@ export async function createTask(req, res) {
     const { title, description, assignedTo, status, priority, dueDate } =
       req.body;
 
-    const hasAccess = await checkProjectAccess(req, projectId);
+    const access = await checkProjectAccess(req, projectId);
 
-    if (!hasAccess) {
+    if (!access.exists) {
+      return res.status(404).json({
+        error: "Project not found",
+      });
+    }
+
+    if (!access.hasAccess) {
       return res.status(403).json({
         error: "You do not have access to this project",
       });
@@ -220,6 +237,7 @@ export async function createTask(req, res) {
         `
         INSERT INTO tasks (
           project_id,
+          created_by,
           title,
           description,
           assigned_to,
@@ -228,10 +246,11 @@ export async function createTask(req, res) {
           due_date,
           overdue
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, false)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, false)
         RETURNING
           id,
           project_id,
+          created_by,
           title,
           description,
           assigned_to,
@@ -244,6 +263,7 @@ export async function createTask(req, res) {
         `,
         [
           projectId,
+          req.user.id,
           title,
           description || null,
           assignedTo || null,
@@ -407,29 +427,30 @@ export async function updateTask(req, res) {
     const result = await transaction(async (client) => {
       const updateResult = await client.query(
         `
-          UPDATE tasks
-          SET
-            title = COALESCE($1, title),
-            description = COALESCE($2, description),
-            assigned_to = $3,
-            status = $4,
-            priority = COALESCE($5, priority),
-            due_date = $6,
-            updated_at = now()
-          WHERE id = $7
-          RETURNING
-            id,
-            project_id,
-            title,
-            description,
-            assigned_to,
-            status,
-            priority,
-            due_date,
-            overdue,
-            created_at,
-            updated_at
-          `,
+        UPDATE tasks
+        SET
+          title = COALESCE($1, title),
+          description = COALESCE($2, description),
+          assigned_to = $3,
+          status = $4,
+          priority = COALESCE($5, priority),
+          due_date = $6,
+          updated_at = now()
+        WHERE id = $7
+        RETURNING
+          id,
+          project_id,
+          created_by,
+          title,
+          description,
+          assigned_to,
+          status,
+          priority,
+          due_date,
+          overdue,
+          created_at,
+          updated_at
+        `,
         [
           title ?? null,
           description ?? null,
