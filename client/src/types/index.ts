@@ -1,4 +1,4 @@
-export type UserRole = 'admin' | 'project_manager' | 'developer';
+export type UserRole = "admin" | "project_manager" | "developer";
 
 export interface User {
   id: string;
@@ -20,10 +20,18 @@ export interface Project {
   task_count?: number;
 }
 
-export type TaskStatus = 'todo' | 'in-progress' | 'done';
-export type TaskPriority = 'low' | 'medium' | 'high';
+export type TaskStatus =
+  | "todo"
+  | "in-progress"
+  | "in-review"
+  | "done";
 
-// Type for tasksByStatus object
+export type TaskPriority =
+  | "low"
+  | "medium"
+  | "high"
+  | "critical";
+
 export type TasksByStatus = {
   [key in TaskStatus]: Task[];
 };
@@ -31,12 +39,19 @@ export type TasksByStatus = {
 export interface Task {
   id: string;
   project_id: string;
+  project_title?: string;
   title: string;
   description: string | null;
   status: TaskStatus;
   priority: TaskPriority;
+  assigned_to: string | null;
+  assigned_developer?: string | null;
+  assigned_to_name?: string | null;
+  assigned_to_email?: string | null;
   created_by: string | null;
-  created_by_name?: string;
+  created_by_name?: string | null;
+  due_date: string | null;
+  overdue: boolean;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -52,6 +67,7 @@ export interface ActivityLog {
   metadata: Record<string, any>;
   created_at: string;
 }
+
 export interface Notification {
   id: string;
   user_id: string;
@@ -66,7 +82,8 @@ export interface Notification {
 export interface ProjectSummary {
   taskCountsByStatus: {
     todo: number;
-    'in-progress': number;
+    "in-progress": number;
+    "in-review": number;
     done: number;
   };
   tasksCompletedPerDay: Array<{
@@ -83,6 +100,7 @@ export interface ProjectSummary {
     low: number;
     medium: number;
     high: number;
+    critical: number;
   };
   recentActivity: ActivityLog[];
 }
@@ -110,6 +128,7 @@ export interface AuthResponse {
   accessToken: string;
   user: User;
 }
+
 export interface ApiError {
   error: string;
   errors?: Array<{

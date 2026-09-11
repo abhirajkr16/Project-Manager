@@ -6,8 +6,10 @@ import {
   updateTask,
   deleteTask,
 } from "../controllers/tasks.controller.js";
+
 import { verifyToken, requireRole } from "../middleware/auth.js";
-import { validate, schemas } from "../middleware/validation.js";
+
+import { validate, validateQuery, schemas } from "../middleware/validation.js";
 
 const router = express.Router();
 
@@ -18,6 +20,7 @@ router.get("/my", requireRole("developer"), getMyTasks);
 router.get(
   "/projects/:projectId/tasks",
   requireRole("admin", "project_manager"),
+  validateQuery(schemas.taskFilters),
   getTasks,
 );
 

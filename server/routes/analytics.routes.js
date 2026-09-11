@@ -1,18 +1,31 @@
-import express from 'express';
+import express from "express";
 import {
   getProjectSummary,
   getUserActivity,
-  getProjectSnapshot
-} from '../controllers/analytics.controller.js';
-import { verifyToken } from '../middleware/auth.js';
+  getProjectSnapshot,
+} from "../controllers/analytics.controller.js";
+import { verifyToken, requireRole } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// All routes require authentication
 router.use(verifyToken);
 
-router.get('/projects/:id/summary', getProjectSummary);
-router.get('/projects/:id/snapshot', getProjectSnapshot);
-router.get('/users/:id/activity', getUserActivity);
+router.get(
+  "/projects/:id/summary",
+  requireRole("admin", "project_manager"),
+  getProjectSummary,
+);
+
+router.get(
+  "/projects/:id/snapshot",
+  requireRole("admin", "project_manager"),
+  getProjectSnapshot,
+);
+
+router.get(
+  "/users/:id/activity",
+  requireRole("admin", "project_manager", "developer"),
+  getUserActivity,
+);
 
 export default router;

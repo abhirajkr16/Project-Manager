@@ -9,6 +9,8 @@ import type {
   Notification,
   Project,
   Task,
+  TaskPriority,
+  TaskStatus,
   ProjectSummary,
   UserActivity,
   ActivityLog,
@@ -23,6 +25,7 @@ const api = axios.create({
   headers: {
     "Content-Type": "application/json",
   },
+  withCredentials: true,
 });
 
 api.interceptors.request.use(
@@ -164,7 +167,10 @@ export const tasksApi = {
   getTasks: async (
     projectId: string,
     params?: {
-      status?: string;
+      status?: TaskStatus;
+      priority?: TaskPriority;
+      dueFrom?: string;
+      dueTo?: string;
       search?: string;
       limit?: number;
       offset?: number;
@@ -172,18 +178,22 @@ export const tasksApi = {
   ) => {
     const response = await api.get<Task[]>(
       `/tasks/projects/${projectId}/tasks`,
-      { params },
+      {
+        params,
+      },
     );
-
+  
     return response.data;
   },
-
   createTask: async (
     projectId: string,
     data: {
       title: string;
-      description?: string;
-      priority?: string;
+      description?: string | null;
+      assignedTo?: string | null;
+      status?: TaskStatus;
+      priority?: TaskPriority;
+      dueDate?: string | null;
     },
   ) => {
     const response = await api.post<Task>(
@@ -198,9 +208,11 @@ export const tasksApi = {
     id: string,
     data: {
       title?: string;
-      description?: string;
-      status?: string;
-      priority?: string;
+      description?: string | null;
+      assignedTo?: string | null;
+      status?: TaskStatus;
+      priority?: TaskPriority;
+      dueDate?: string | null;
     },
   ) => {
     const response = await api.put<Task>(
@@ -213,6 +225,12 @@ export const tasksApi = {
 
   deleteTask: async (id: string) => {
     await api.delete(`/tasks/${id}`);
+  },
+
+  getMyTasks: async () => {
+    const response = await api.get<Task[]>("/tasks/my");
+
+    return response.data;
   },
 };
 

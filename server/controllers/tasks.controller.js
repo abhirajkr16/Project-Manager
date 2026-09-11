@@ -36,6 +36,9 @@ export async function getTasks(req, res) {
   try {
     const { projectId } = req.params;
 
+    const { status, priority, dueFrom, dueTo, search, limit, offset } =
+      req.query;
+
     const hasAccess = await checkProjectAccess(req, projectId);
 
     if (!hasAccess) {
@@ -43,6 +46,54 @@ export async function getTasks(req, res) {
         error: "You do not have access to this project",
       });
     }
+
+    const conditions = ["t.project_id = $1"];
+    const values = [projectId];
+
+    if (status) {
+      values.push(status);
+      conditions.push(`t.status = $${values.length}`);
+    }
+
+    if (priority) {
+      values.push(priority);
+      conditions.push(`t.priority = $${values.length}`);
+    }
+
+    if (dueFrom) {
+      values.push(dueFrom);
+      conditions.push(`t.due_date >= $${values.length}::date`);
+    }
+
+    if (dueTo) {
+      values.push(dueTo);
+      conditions.push(
+        `t.due_date < ($${values.length}::date + INTERVAL '1 day')`,
+      );
+    }
+
+    if (search) {
+      values.push(`%${search}%`);
+
+      conditions.push(`
+        (
+          t.title ILIKE $${values.length}
+          OR t.description ILIKE $${values.length}
+          OR u.name ILIKE $${values.length}
+        )
+      `);
+    }
+
+    const limitValue = limit || 50;
+    const offsetValue = offset || 0;
+
+    values.push(limitValue);
+
+    const limitParameter = values.length;
+
+    values.push(offsetValue);
+
+    const offsetParameter = values.length;
 
     const result = await query(
       `
@@ -62,7 +113,7 @@ export async function getTasks(req, res) {
       FROM tasks t
       LEFT JOIN users u
         ON u.id = t.assigned_to
-      WHERE t.project_id = $1
+      WHERE ${conditions.join(" AND ")}
       ORDER BY
         CASE t.priority
           WHEN 'critical' THEN 1
@@ -72,8 +123,10 @@ export async function getTasks(req, res) {
         END,
         t.due_date NULLS LAST,
         t.created_at DESC
+      LIMIT $${limitParameter}
+      OFFSET $${offsetParameter}
       `,
-      [projectId],
+      values,
     );
 
     res.json(result.rows);
@@ -227,6 +280,7 @@ export async function createTask(req, res) {
           priority: task.priority,
         },
       });
+
       let notification = null;
 
       if (task.assigned_to) {
@@ -253,6 +307,7 @@ export async function createTask(req, res) {
       task: result.task,
       assignedTo: result.task.assigned_to,
     });
+
     if (result.notification) {
       broadcastNotification(result.notification);
     }
@@ -352,29 +407,29 @@ export async function updateTask(req, res) {
     const result = await transaction(async (client) => {
       const updateResult = await client.query(
         `
-        UPDATE tasks
-        SET
-          title = COALESCE($1, title),
-          description = COALESCE($2, description),
-          assigned_to = $3,
-          status = $4,
-          priority = COALESCE($5, priority),
-          due_date = $6,
-          updated_at = now()
-        WHERE id = $7
-        RETURNING
-          id,
-          project_id,
-          title,
-          description,
-          assigned_to,
-          status,
-          priority,
-          due_date,
-          overdue,
-          created_at,
-          updated_at
-        `,
+          UPDATE tasks
+          SET
+            title = COALESCE($1, title),
+            description = COALESCE($2, description),
+            assigned_to = $3,
+            status = $4,
+            priority = COALESCE($5, priority),
+            due_date = $6,
+            updated_at = now()
+          WHERE id = $7
+          RETURNING
+            id,
+            project_id,
+            title,
+            description,
+            assigned_to,
+            status,
+            priority,
+            due_date,
+            overdue,
+            created_at,
+            updated_at
+          `,
         [
           title ?? null,
           description ?? null,

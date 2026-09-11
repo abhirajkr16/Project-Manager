@@ -89,4 +89,45 @@ export const schemas = {
 
     dueDate: Joi.date().iso().allow(null),
   }).min(1),
+
+  taskFilters: Joi.object({
+    status: Joi.string()
+      .valid("todo", "in-progress", "in-review", "done"),
+
+    priority: Joi.string()
+      .valid("low", "medium", "high", "critical"),
+
+    dueFrom: Joi.date().iso(),
+
+    dueTo: Joi.date().iso(),
+
+    search: Joi.string().max(200).allow(""),
+
+    limit: Joi.number().integer().min(1).max(100).default(50),
+
+    offset: Joi.number().integer().min(0).default(0),
+  }),
+};
+export const validateQuery = (schema) => {
+  return (req, res, next) => {
+    const { error, value } = schema.validate(req.query, {
+      abortEarly: false,
+      stripUnknown: true,
+    });
+
+    if (error) {
+      const errors = error.details.map((detail) => ({
+        field: detail.path.join("."),
+        message: detail.message,
+      }));
+
+      return res.status(400).json({
+        error: "Invalid query parameters",
+        errors,
+      });
+    }
+
+    req.query = value;
+    next();
+  };
 };
