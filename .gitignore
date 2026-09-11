@@ -10,3 +10,4 @@ coverage/
 client/node_modules/
 client/dist/
 client/.env
+ai.md
