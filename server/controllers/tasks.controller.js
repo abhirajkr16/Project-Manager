@@ -1,5 +1,14 @@
-import { query } from "../db/index.js";
-import { recordStatusChange } from "../services/task-status.service.js";
+import { query, transaction } from "../db/index.js";
+import { logActivity } from "../services/activity.service.js";
+import { createNotification } from "../services/notification.service.js";
+
+import {
+  broadcastActivity,
+  broadcastTaskCreated,
+  broadcastTaskUpdated,
+  broadcastTaskDeleted,
+  broadcastNotification,
+} from "../services/realtime.service.js";
 
 async function checkProjectAccess(req, projectId) {
   if (req.user.role === "admin") {
@@ -70,6 +79,7 @@ export async function getTasks(req, res) {
     res.json(result.rows);
   } catch (error) {
     console.error("Get tasks error:", error);
+
     res.status(500).json({
       error: "Failed to fetch tasks",
     });
@@ -112,6 +122,7 @@ export async function getMyTasks(req, res) {
     res.json(result.rows);
   } catch (error) {
     console.error("Get my tasks error:", error);
+
     res.status(500).json({
       error: "Failed to fetch tasks",
     });
@@ -121,6 +132,7 @@ export async function getMyTasks(req, res) {
 export async function createTask(req, res) {
   try {
     const { projectId } = req.params;
+
     const { title, description, assignedTo, status, priority, dueDate } =
       req.body;
 
@@ -150,55 +162,110 @@ export async function createTask(req, res) {
       }
     }
 
-    const result = await query(
-      `
-      INSERT INTO tasks (
-        project_id,
-        title,
-        description,
-        assigned_to,
-        status,
-        priority,
-        due_date,
-        overdue
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, false)
-      RETURNING
-        id,
-        project_id,
-        title,
-        description,
-        assigned_to,
-        status,
-        priority,
-        due_date,
-        overdue,
-        created_at,
-        updated_at
-      `,
-      [
+    const result = await transaction(async (client) => {
+      const taskResult = await client.query(
+        `
+        INSERT INTO tasks (
+          project_id,
+          title,
+          description,
+          assigned_to,
+          status,
+          priority,
+          due_date,
+          overdue
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, false)
+        RETURNING
+          id,
+          project_id,
+          title,
+          description,
+          assigned_to,
+          status,
+          priority,
+          due_date,
+          overdue,
+          created_at,
+          updated_at
+        `,
+        [
+          projectId,
+          title,
+          description || null,
+          assignedTo || null,
+          status || "todo",
+          priority || "medium",
+          dueDate || null,
+        ],
+      );
+
+      const task = taskResult.rows[0];
+
+      await client.query(
+        `
+        INSERT INTO task_status_history (
+          task_id,
+          changed_by,
+          old_status,
+          new_status
+        )
+        VALUES ($1, $2, $3, $4)
+        `,
+        [task.id, req.user.id, null, task.status],
+      );
+
+      const activity = await logActivity(client, {
+        userId: req.user.id,
         projectId,
-        title,
-        description || null,
-        assignedTo || null,
-        status || "todo",
-        priority || "medium",
-        dueDate || null,
-      ],
-    );
+        action: "create_task",
+        metadata: {
+          taskId: task.id,
+          taskTitle: task.title,
+          assignedTo: task.assigned_to,
+          status: task.status,
+          priority: task.priority,
+        },
+      });
+      let notification = null;
 
-    const task = result.rows[0];
+      if (task.assigned_to) {
+        notification = await createNotification(client, {
+          userId: task.assigned_to,
+          type: "task_assigned",
+          title: "New task assigned",
+          message: `You have been assigned "${task.title}"`,
+          metadata: {
+            taskId: task.id,
+            projectId: task.project_id,
+          },
+        });
+      }
 
-    await recordStatusChange({
-      taskId: task.id,
-      changedBy: req.user.id,
-      oldStatus: null,
-      newStatus: task.status,
+      return {
+        task,
+        activity,
+        notification,
+      };
     });
 
-    res.status(201).json(task);
+    broadcastTaskCreated({
+      task: result.task,
+      assignedTo: result.task.assigned_to,
+    });
+    if (result.notification) {
+      broadcastNotification(result.notification);
+    }
+
+    broadcastActivity({
+      activity: result.activity,
+      assignedUserIds: [result.task.assigned_to],
+    });
+
+    res.status(201).json(result.task);
   } catch (error) {
     console.error("Create task error:", error);
+
     res.status(500).json({
       error: "Failed to create task",
     });
@@ -278,59 +345,101 @@ export async function updateTask(req, res) {
     }
 
     const newStatus = status ?? task.status;
+
     const newAssignedTo =
       assignedTo === undefined ? task.assigned_to : assignedTo;
 
-    const result = await query(
-      `
-      UPDATE tasks
-      SET
-        title = COALESCE($1, title),
-        description = COALESCE($2, description),
-        assigned_to = $3,
-        status = $4,
-        priority = COALESCE($5, priority),
-        due_date = $6,
-        updated_at = now()
-      WHERE id = $7
-      RETURNING
-        id,
-        project_id,
-        title,
-        description,
-        assigned_to,
-        status,
-        priority,
-        due_date,
-        overdue,
-        created_at,
-        updated_at
-      `,
-      [
-        title ?? null,
-        description ?? null,
-        newAssignedTo,
-        newStatus,
-        priority ?? null,
-        dueDate === undefined ? task.due_date : dueDate,
-        id,
-      ],
-    );
+    const result = await transaction(async (client) => {
+      const updateResult = await client.query(
+        `
+        UPDATE tasks
+        SET
+          title = COALESCE($1, title),
+          description = COALESCE($2, description),
+          assigned_to = $3,
+          status = $4,
+          priority = COALESCE($5, priority),
+          due_date = $6,
+          updated_at = now()
+        WHERE id = $7
+        RETURNING
+          id,
+          project_id,
+          title,
+          description,
+          assigned_to,
+          status,
+          priority,
+          due_date,
+          overdue,
+          created_at,
+          updated_at
+        `,
+        [
+          title ?? null,
+          description ?? null,
+          newAssignedTo,
+          newStatus,
+          priority ?? null,
+          dueDate === undefined ? task.due_date : dueDate,
+          id,
+        ],
+      );
 
-    const updatedTask = result.rows[0];
+      const updatedTask = updateResult.rows[0];
 
-    if (task.status !== updatedTask.status) {
-      await recordStatusChange({
-        taskId: id,
-        changedBy: req.user.id,
-        oldStatus: task.status,
-        newStatus: updatedTask.status,
+      if (task.status !== updatedTask.status) {
+        await client.query(
+          `
+          INSERT INTO task_status_history (
+            task_id,
+            changed_by,
+            old_status,
+            new_status
+          )
+          VALUES ($1, $2, $3, $4)
+          `,
+          [id, req.user.id, task.status, updatedTask.status],
+        );
+      }
+
+      const activity = await logActivity(client, {
+        userId: req.user.id,
+        projectId: updatedTask.project_id,
+        action:
+          task.status !== updatedTask.status
+            ? "update_task_status"
+            : "update_task",
+        metadata: {
+          taskId: updatedTask.id,
+          taskTitle: updatedTask.title,
+          oldStatus: task.status,
+          newStatus: updatedTask.status,
+          oldAssignedTo: task.assigned_to,
+          newAssignedTo: updatedTask.assigned_to,
+        },
       });
-    }
 
-    res.json(updatedTask);
+      return {
+        task: updatedTask,
+        activity,
+      };
+    });
+
+    broadcastTaskUpdated({
+      task: result.task,
+      previousAssignedTo: task.assigned_to,
+    });
+
+    broadcastActivity({
+      activity: result.activity,
+      assignedUserIds: [task.assigned_to, result.task.assigned_to],
+    });
+
+    res.json(result.task);
   } catch (error) {
     console.error("Update task error:", error);
+
     res.status(500).json({
       error: "Failed to update task",
     });
@@ -345,6 +454,9 @@ export async function deleteTask(req, res) {
       `
       SELECT
         t.id,
+        t.project_id,
+        t.assigned_to,
+        t.title,
         p.owner_id
       FROM tasks t
       JOIN projects p
@@ -371,13 +483,41 @@ export async function deleteTask(req, res) {
       });
     }
 
-    await query(`DELETE FROM tasks WHERE id = $1`, [id]);
+    const result = await transaction(async (client) => {
+      const activity = await logActivity(client, {
+        userId: req.user.id,
+        projectId: task.project_id,
+        action: "delete_task",
+        metadata: {
+          taskId: task.id,
+          taskTitle: task.title,
+        },
+      });
+
+      await client.query(`DELETE FROM tasks WHERE id = $1`, [id]);
+
+      return {
+        activity,
+      };
+    });
+
+    broadcastTaskDeleted({
+      taskId: task.id,
+      projectId: task.project_id,
+      assignedTo: task.assigned_to,
+    });
+
+    broadcastActivity({
+      activity: result.activity,
+      assignedUserIds: [task.assigned_to],
+    });
 
     res.json({
       message: "Task deleted successfully",
     });
   } catch (error) {
     console.error("Delete task error:", error);
+
     res.status(500).json({
       error: "Failed to delete task",
     });

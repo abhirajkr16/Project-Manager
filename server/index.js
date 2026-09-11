@@ -3,15 +3,17 @@ import { createServer } from "http";
 import cors from "cors";
 import helmet from "helmet";
 import dotenv from "dotenv";
-import { initializeWebSocket } from "./websocket/index.js";
-import cookieParser from "cookie-parser";
-import { startOverdueJob } from "./jobs/overdue.job.js";
 
 // Import routes
 import authRoutes from "./routes/auth.routes.js";
 import projectsRoutes from "./routes/projects.routes.js";
 import tasksRoutes from "./routes/tasks.routes.js";
 import analyticsRoutes from "./routes/analytics.routes.js";
+import activityRoutes from "./routes/activity.routes.js";
+import { initializeWebSocket } from "./websocket/index.js";
+import cookieParser from "cookie-parser";
+import { startOverdueJob } from "./jobs/overdue.job.js";
+import notificationsRoutes from "./routes/notifications.routes.js";
 
 dotenv.config();
 
@@ -59,7 +61,8 @@ app.use("/auth", authRoutes);
 app.use("/projects", projectsRoutes);
 app.use("/tasks", tasksRoutes);
 app.use("/analytics", analyticsRoutes);
-
+app.use("/activity", activityRoutes);
+app.use("/notifications", notificationsRoutes);
 // 404 handler
 app.use((req, res) => {
   res.status(404).json({ error: "Route not found" });

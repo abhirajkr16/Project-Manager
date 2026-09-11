@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { projectsApi, tasksApi, analyticsApi } from '@/lib/api';
 import { useWebSocket } from '@/contexts/WebSocketContext';
 import { ArrowLeft, Plus, BarChart3, GripVertical } from 'lucide-react';
@@ -12,7 +12,6 @@ const COLORS = ['#0ea5e9', '#f59e0b', '#10b981'];
 export default function ProjectView() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const { joinProject, leaveProject } = useWebSocket();
   const [newTask, setNewTask] = useState({ title: '', description: '', priority: 'medium' });
   const [showAnalytics, setShowAnalytics] = useState(false);
@@ -44,23 +43,26 @@ export default function ProjectView() {
   const createTaskMutation = useMutation({
     mutationFn: (data: any) => tasksApi.createTask(id!, data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks', id] });
-      setNewTask({ title: '', description: '', priority: 'medium' });
+      setNewTask({
+        title: '',
+        description: '',
+        priority: 'medium',
+      });
     },
   });
 
   const updateTaskMutation = useMutation({
-    mutationFn: ({ taskId, data }: { taskId: string; data: any }) => tasksApi.updateTask(taskId, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks', id] });
-    },
+    mutationFn: ({
+      taskId,
+      data,
+    }: {
+      taskId: string;
+      data: any;
+    }) => tasksApi.updateTask(taskId, data),
   });
 
   const deleteTaskMutation = useMutation({
     mutationFn: tasksApi.deleteTask,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks', id] });
-    },
   });
 
   const tasksByStatus: TasksByStatus = {

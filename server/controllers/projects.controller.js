@@ -1,5 +1,11 @@
 import { query, transaction } from "../db/index.js";
 import { logActivity } from "../services/activity.service.js";
+import {
+  broadcastActivity,
+  broadcastProjectCreated,
+  broadcastProjectUpdated,
+  broadcastProjectDeleted,
+} from "../services/realtime.service.js";
 
 const checkProjectAccess = async (client, projectId, userId, role) => {
   const result = await client.query(
@@ -129,30 +135,43 @@ export const createProject = async (req, res) => {
   const userId = req.user.id;
 
   try {
-    const project = await transaction(async (client) => {
-      const result = await client.query(
-        `INSERT INTO projects (owner_id, title, description)
+    const result = await transaction(async (client) => {
+      const projectResult = await client.query(
+        `INSERT INTO projects (
+           owner_id,
+           title,
+           description
+         )
          VALUES ($1, $2, $3)
          RETURNING *`,
         [userId, title, description],
       );
 
-      const newProject = result.rows[0];
+      const project = projectResult.rows[0];
 
-      await logActivity(client, {
+      const activity = await logActivity(client, {
         userId,
-        projectId: newProject.id,
+        projectId: project.id,
         action: "create_project",
         metadata: {
           title,
         },
       });
 
-      return newProject;
+      return {
+        project,
+        activity,
+      };
+    });
+
+    broadcastProjectCreated(result.project);
+
+    broadcastActivity({
+      activity: result.activity,
     });
 
     res.status(201).json({
-      project,
+      project: result.project,
     });
   } catch (error) {
     console.error("Create project error:", error);
@@ -170,8 +189,13 @@ export const updateProject = async (req, res) => {
   const role = req.user.role;
 
   try {
-    const project = await transaction(async (client) => {
-      await checkProjectAccess(client, id, userId, role);
+    const result = await transaction(async (client) => {
+      const existingProject = await checkProjectAccess(
+        client,
+        id,
+        userId,
+        role,
+      );
 
       const fields = [];
       const values = [];
@@ -191,7 +215,7 @@ export const updateProject = async (req, res) => {
 
       values.push(id);
 
-      const result = await client.query(
+      const projectResult = await client.query(
         `UPDATE projects
          SET ${fields.join(", ")}
          WHERE id = $${paramCount}
@@ -199,7 +223,9 @@ export const updateProject = async (req, res) => {
         values,
       );
 
-      await logActivity(client, {
+      const project = projectResult.rows[0];
+
+      const activity = await logActivity(client, {
         userId,
         projectId: id,
         action: "update_project",
@@ -209,11 +235,21 @@ export const updateProject = async (req, res) => {
         },
       });
 
-      return result.rows[0];
+      return {
+        project,
+        activity,
+        ownerId: existingProject.owner_id,
+      };
+    });
+
+    broadcastProjectUpdated(result.project);
+
+    broadcastActivity({
+      activity: result.activity,
     });
 
     res.json({
-      project,
+      project: result.project,
     });
   } catch (error) {
     console.error("Update project error:", error);
@@ -242,17 +278,33 @@ export const deleteProject = async (req, res) => {
   const role = req.user.role;
 
   try {
-    await transaction(async (client) => {
-      await checkProjectAccess(client, id, userId, role);
+    const result = await transaction(async (client) => {
+      const project = await checkProjectAccess(client, id, userId, role);
 
-      await logActivity(client, {
+      const activity = await logActivity(client, {
         userId,
         projectId: id,
         action: "delete_project",
-        metadata: {},
+        metadata: {
+          projectTitle: project.title,
+        },
       });
 
       await client.query("DELETE FROM projects WHERE id = $1", [id]);
+
+      return {
+        activity,
+        ownerId: project.owner_id,
+      };
+    });
+
+    broadcastProjectDeleted({
+      projectId: id,
+      ownerId: result.ownerId,
+    });
+
+    broadcastActivity({
+      activity: result.activity,
     });
 
     res.status(204).send();

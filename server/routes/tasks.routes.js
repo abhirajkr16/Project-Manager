@@ -16,13 +16,13 @@ router.use(verifyToken);
 router.get("/my", requireRole("developer"), getMyTasks);
 
 router.get(
-  "/projects/:id/tasks",
+  "/projects/:projectId/tasks",
   requireRole("admin", "project_manager"),
   getTasks,
 );
 
 router.post(
-  "/projects/:id/tasks",
+  "/projects/:projectId/tasks",
   requireRole("admin", "project_manager"),
   validate(schemas.createTask),
   createTask,

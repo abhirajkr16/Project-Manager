@@ -1,8 +1,10 @@
+export type UserRole = 'admin' | 'project_manager' | 'developer';
+
 export interface User {
   id: string;
   name: string;
   email: string;
-  role: 'admin' | 'user';
+  role: UserRole;
   createdAt: string;
 }
 
@@ -43,11 +45,21 @@ export interface Task {
 
 export interface ActivityLog {
   id: string;
-  user_id: string;
-  user_name?: string;
-  project_id: string;
+  user_id: string | null;
+  user_name?: string | null;
+  project_id: string | null;
   action: string;
   metadata: Record<string, any>;
+  created_at: string;
+}
+export interface Notification {
+  id: string;
+  user_id: string;
+  type: string;
+  title: string;
+  message: string;
+  metadata: Record<string, any>;
+  read_at: string | null;
   created_at: string;
 }
 
@@ -95,10 +107,9 @@ export interface UserActivity {
 }
 
 export interface AuthResponse {
-  token: string;
+  accessToken: string;
   user: User;
 }
-
 export interface ApiError {
   error: string;
   errors?: Array<{
