@@ -143,6 +143,7 @@ export default function ProjectView() {
   const queryClient = useQueryClient();
 
   const { user } = useAuth();
+
   const {
     joinProject,
     leaveProject,
@@ -186,7 +187,7 @@ export default function ProjectView() {
   });
 
   const {
-    data: tasks = [],
+    data: tasksResponse,
     isLoading: tasksLoading,
   } = useQuery({
     queryKey: [
@@ -221,7 +222,7 @@ export default function ProjectView() {
   });
 
   const {
-    data: myTasks = [],
+    data: myTasksResponse,
     isLoading: myTasksLoading,
   } = useQuery({
     queryKey: ["my-tasks"],
@@ -229,7 +230,67 @@ export default function ProjectView() {
     enabled: Boolean(isDeveloper),
   });
 
-  const visibleTasks = useMemo(
+  /*
+   * Normalize API responses.
+   *
+   * Depending on the backend response shape, the API can return:
+   *
+   *   [task1, task2]
+   *
+   * or:
+   *
+   *   { tasks: [task1, task2] }
+   *
+   * Always convert it to a Task[] before using
+   * array methods such as filter() and find().
+   */
+  const tasks = useMemo<Task[]>(() => {
+    if (Array.isArray(tasksResponse)) {
+      return tasksResponse;
+    }
+
+    if (
+      tasksResponse &&
+      typeof tasksResponse === "object" &&
+      "tasks" in tasksResponse
+    ) {
+      const response =
+        tasksResponse as {
+          tasks?: Task[];
+        };
+
+      if (Array.isArray(response.tasks)) {
+        return response.tasks;
+      }
+    }
+
+    return [];
+  }, [tasksResponse]);
+
+  const myTasks = useMemo<Task[]>(() => {
+    if (Array.isArray(myTasksResponse)) {
+      return myTasksResponse;
+    }
+
+    if (
+      myTasksResponse &&
+      typeof myTasksResponse === "object" &&
+      "tasks" in myTasksResponse
+    ) {
+      const response =
+        myTasksResponse as {
+          tasks?: Task[];
+        };
+
+      if (Array.isArray(response.tasks)) {
+        return response.tasks;
+      }
+    }
+
+    return [];
+  }, [myTasksResponse]);
+
+  const visibleTasks = useMemo<Task[]>(
     () =>
       canManageTasks
         ? tasks
@@ -446,6 +507,10 @@ export default function ProjectView() {
       onSuccess: () => {
         queryClient.invalidateQueries({
           queryKey: ["tasks", id],
+        });
+
+        queryClient.invalidateQueries({
+          queryKey: ["my-tasks"],
         });
 
         queryClient.invalidateQueries({
