@@ -767,10 +767,11 @@ export default function Dashboard() {
                     </div>
 
                     <div className="min-w-0">
-                      <h3 className="truncate text-lg font-semibold text-gray-900">
-                        {project.title}
-                      </h3>
-
+                    <h3 className="truncate text-lg font-semibold text-gray-900">
+  {project.title ||
+    (project as Project & { name?: string }).name ||
+    "Untitled Project"}
+</h3>
                       <p className="text-sm text-gray-500">
                         {project.task_count || 0} tasks
                       </p>
