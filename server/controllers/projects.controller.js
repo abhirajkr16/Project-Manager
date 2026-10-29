@@ -7,9 +7,20 @@ import {
   broadcastProjectDeleted,
 } from "../services/realtime.service.js";
 
+// Keep the database column as "name" while supporting frontend code
+// that expects a project property called "title".
+const formatProject = (project) => {
+  if (!project) return project;
+
+  return {
+    ...project,
+    title: project.title ?? project.name,
+  };
+};
+
 const checkProjectAccess = async (client, projectId, userId, role) => {
   const result = await client.query(
-    `SELECT id, owner_id
+    `SELECT id, name, owner_id
      FROM projects
      WHERE id = $1`,
     [projectId],
@@ -32,15 +43,22 @@ const checkProjectAccess = async (client, projectId, userId, role) => {
   throw new Error("Access denied");
 };
 
+// GET /projects
 export const getProjects = async (req, res) => {
   const userId = req.user.id;
   const role = req.user.role;
-  const { limit = 50, offset = 0 } = req.query;
+
+  const limit = Math.min(
+    Math.max(Number.parseInt(req.query.limit, 10) || 50, 1),
+    100,
+  );
+  const offset = Math.max(Number.parseInt(req.query.offset, 10) || 0, 0);
 
   try {
     let queryText = `
       SELECT
         p.*,
+        p.name AS title,
         u.name AS owner_name,
         u.email AS owner_email,
         c.name AS client_name,
@@ -57,25 +75,22 @@ export const getProjects = async (req, res) => {
 
     const params = [limit, offset];
 
-    if (role === "admin") {
-      queryText += `
-        ORDER BY p.updated_at DESC
-        LIMIT $1 OFFSET $2
-      `;
-    } else {
+    if (role !== "admin") {
       queryText += `
         WHERE p.owner_id = $3
-        ORDER BY p.updated_at DESC
-        LIMIT $1 OFFSET $2
       `;
-
       params.push(userId);
     }
+
+    queryText += `
+      ORDER BY p.updated_at DESC
+      LIMIT $1 OFFSET $2
+    `;
 
     const result = await query(queryText, params);
 
     res.json({
-      projects: result.rows,
+      projects: result.rows.map(formatProject),
     });
   } catch (error) {
     console.error("Get projects error:", error);
@@ -86,6 +101,7 @@ export const getProjects = async (req, res) => {
   }
 };
 
+// GET /projects/:id
 export const getProject = async (req, res) => {
   const { id } = req.params;
 
@@ -93,6 +109,7 @@ export const getProject = async (req, res) => {
     const result = await query(
       `SELECT
          p.*,
+         p.name AS title,
          u.name AS owner_name,
          u.email AS owner_email,
          c.name AS client_name,
@@ -118,33 +135,42 @@ export const getProject = async (req, res) => {
       });
     }
 
-    res.json({
-      project,
+    return res.json({
+      project: formatProject(project),
     });
   } catch (error) {
     console.error("Get project error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       error: "Failed to fetch project",
     });
   }
 };
 
+// POST /projects
 export const createProject = async (req, res) => {
   const { title, description } = req.body;
   const userId = req.user.id;
+
+  if (typeof title !== "string" || !title.trim()) {
+    return res.status(400).json({
+      error: "Project title is required",
+    });
+  }
+
+  const projectName = title.trim();
 
   try {
     const result = await transaction(async (client) => {
       const projectResult = await client.query(
         `INSERT INTO projects (
            owner_id,
-           title,
+           name,
            description
          )
          VALUES ($1, $2, $3)
          RETURNING *`,
-        [userId, title, description],
+        [userId, projectName, description ?? null],
       );
 
       const project = projectResult.rows[0];
@@ -154,7 +180,7 @@ export const createProject = async (req, res) => {
         projectId: project.id,
         action: "create_project",
         metadata: {
-          title,
+          title: projectName,
         },
       });
 
@@ -164,29 +190,38 @@ export const createProject = async (req, res) => {
       };
     });
 
-    broadcastProjectCreated(result.project);
+    const formattedProject = formatProject(result.project);
+
+    broadcastProjectCreated(formattedProject);
 
     broadcastActivity({
       activity: result.activity,
     });
 
-    res.status(201).json({
-      project: result.project,
+    return res.status(201).json({
+      project: formattedProject,
     });
   } catch (error) {
     console.error("Create project error:", error);
 
-    res.status(500).json({
+    return res.status(500).json({
       error: "Failed to create project",
     });
   }
 };
 
+// PUT /projects/:id
 export const updateProject = async (req, res) => {
   const { id } = req.params;
   const { title, description } = req.body;
   const userId = req.user.id;
   const role = req.user.role;
+
+  if (title !== undefined && (typeof title !== "string" || !title.trim())) {
+    return res.status(400).json({
+      error: "Project title must not be empty",
+    });
+  }
 
   try {
     const result = await transaction(async (client) => {
@@ -202,8 +237,8 @@ export const updateProject = async (req, res) => {
       let paramCount = 1;
 
       if (title !== undefined) {
-        fields.push(`title = $${paramCount++}`);
-        values.push(title);
+        fields.push(`name = $${paramCount++}`);
+        values.push(title.trim());
       }
 
       if (description !== undefined) {
@@ -211,8 +246,8 @@ export const updateProject = async (req, res) => {
         values.push(description);
       }
 
+      // Always update the modification timestamp.
       fields.push("updated_at = now()");
-
       values.push(id);
 
       const projectResult = await client.query(
@@ -230,7 +265,7 @@ export const updateProject = async (req, res) => {
         projectId: id,
         action: "update_project",
         metadata: {
-          title,
+          title: title === undefined ? existingProject.name : title.trim(),
           description,
         },
       });
@@ -242,14 +277,16 @@ export const updateProject = async (req, res) => {
       };
     });
 
-    broadcastProjectUpdated(result.project);
+    const formattedProject = formatProject(result.project);
+
+    broadcastProjectUpdated(formattedProject);
 
     broadcastActivity({
       activity: result.activity,
     });
 
-    res.json({
-      project: result.project,
+    return res.json({
+      project: formattedProject,
     });
   } catch (error) {
     console.error("Update project error:", error);
@@ -266,12 +303,13 @@ export const updateProject = async (req, res) => {
       });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       error: "Failed to update project",
     });
   }
 };
 
+// DELETE /projects/:id
 export const deleteProject = async (req, res) => {
   const { id } = req.params;
   const userId = req.user.id;
@@ -286,7 +324,7 @@ export const deleteProject = async (req, res) => {
         projectId: id,
         action: "delete_project",
         metadata: {
-          projectTitle: project.title,
+          projectTitle: project.name,
         },
       });
 
@@ -307,7 +345,7 @@ export const deleteProject = async (req, res) => {
       activity: result.activity,
     });
 
-    res.status(204).send();
+    return res.status(204).send();
   } catch (error) {
     console.error("Delete project error:", error);
 
@@ -323,7 +361,7 @@ export const deleteProject = async (req, res) => {
       });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       error: "Failed to delete project",
     });
   }
